@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+models/*.pt
+data/generated/
+reports/examples/
+reports/*.png
+reports/*.json
+.DS_Store
+*.egg-info/
+.claude/
