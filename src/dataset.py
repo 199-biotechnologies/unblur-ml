@@ -24,26 +24,36 @@ NORM_STD = [0.5, 0.5, 0.5]
 
 
 def get_train_transforms():
-    """Training augmentation — careful not to destroy blur signal."""
+    """Training augmentation — simulates real-world screenshot degradation."""
     return A.Compose([
         A.Resize(INPUT_H, INPUT_W),
-        # JPEG compression (moderate — don't destroy subtle gradients)
-        A.ImageCompression(quality_range=(50, 95), p=0.3),
-        # Simulate partial crop / shifted view
+        # --- Compression artifacts (JPEG + video codec simulation) ---
+        # JPEG compression: screenshots, saved images
+        A.ImageCompression(quality_range=(20, 95), p=0.5),
+        # Downscale+upscale: simulates video compression / low-res screenshots
+        # (H.264/VP9 quantization looks like this at the pixel level)
+        A.Downscale(scale_range=(0.4, 0.8), p=0.3),
+        # --- Geometric transforms ---
+        # Simulate partial crop / shifted view / slight rotation
         A.Affine(
-            translate_percent={"x": (-0.08, 0.08), "y": (-0.05, 0.05)},
-            scale=(0.9, 1.1),
-            rotate=(-2, 2),
-            mode=cv2.BORDER_CONSTANT, cval=255, p=0.3,
+            translate_percent={"x": (-0.12, 0.12), "y": (-0.08, 0.08)},
+            scale=(0.85, 1.15),
+            rotate=(-3, 3),
+            mode=cv2.BORDER_CONSTANT, cval=255, p=0.4,
         ),
-        # Small occlusion — simulates overlap from adjacent words
+        # Simulate cropping from edges (partial word visibility)
+        A.RandomCrop(height=int(INPUT_H * 0.85), width=int(INPUT_W * 0.85), p=0.2),
+        A.Resize(INPUT_H, INPUT_W),  # resize back after crop
+        # --- Occlusion / overlap ---
         A.CoarseDropout(
-            num_holes_range=(1, 2), hole_height_range=(4, 12), hole_width_range=(8, 30),
-            fill="random", p=0.2,
+            num_holes_range=(1, 3), hole_height_range=(4, 16), hole_width_range=(8, 40),
+            fill="random", p=0.25,
         ),
-        # Brightness/contrast (gentle)
-        A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.3),
-        # Normalize for grayscale
+        # --- Color / exposure ---
+        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.4),
+        # Slight noise (sensor noise, compression residuals)
+        A.GaussNoise(std_range=(0.01, 0.04), p=0.2),
+        # --- Normalize ---
         A.Normalize(mean=NORM_MEAN, std=NORM_STD),
         ToTensorV2(),
     ])
