@@ -1,8 +1,12 @@
 """
-Training script for blurred word classifier.
+Training script v3 — fixes all Codex-identified bugs, hard-focused curriculum.
 
-Optimized for Apple Silicon M4 Max with MPS backend.
-Uses curriculum learning: starts with easy blur, increases over time.
+Key changes from v2:
+- Fixed validation set (same seed, covers full sigma range) — Codex bug #1
+- Single optimizer lifecycle after warmup — Codex bug #5
+- Hard-focused curriculum: lower bound rises (3→5→7) — Codex bug #6
+- Training data includes degradation augmentations (grey text, colored bg, inverted, JPEG, downscale)
+- Supports both resnet18 and convnextv2_tiny
 """
 
 import os
@@ -26,7 +30,6 @@ from src.dataset import (
 )
 from src.generate_data import get_available_fonts
 
-
 NUM_CLASSES = 2048
 
 
@@ -39,25 +42,20 @@ def get_device():
 
 
 def create_model(model_name: str, pretrained: bool = True):
-    """Create model via timm."""
     model = timm.create_model(model_name, pretrained=pretrained, num_classes=NUM_CLASSES)
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"  Model: {model_name}")
-    print(f"  Total params: {total:,}")
-    print(f"  Trainable params: {trainable:,}")
+    print(f"  Model: {model_name} ({total:,} params, {trainable:,} trainable)")
     return model
 
 
 def freeze_backbone(model):
-    """Freeze everything except the classifier head."""
     for name, param in model.named_parameters():
         if "fc" not in name and "classifier" not in name and "head" not in name:
             param.requires_grad = False
 
 
 def unfreeze_all(model):
-    """Unfreeze all parameters."""
     for param in model.parameters():
         param.requires_grad = True
 
@@ -79,7 +77,6 @@ def train_one_epoch(model, loader, criterion, optimizer, device, scheduler=None)
         loss.backward()
         optimizer.step()
 
-        # OneCycleLR steps per batch
         if scheduler is not None:
             scheduler.step()
 
@@ -128,31 +125,33 @@ def evaluate(model, loader, criterion, device):
 
 
 def get_sigma_for_epoch(epoch: int, max_epochs: int) -> tuple:
-    """Curriculum learning: gradually increase blur difficulty."""
+    """Hard-focused curriculum: lower bound rises too, spending budget on hard cases."""
     progress = epoch / max(max_epochs - 1, 1)
 
-    if progress < 0.15:
-        return (0.5, 3.0)   # Phase 1: learn word shapes
-    elif progress < 0.35:
-        return (0.5, 5.0)   # Phase 2: mild blur
-    elif progress < 0.55:
-        return (0.5, 7.0)   # Phase 3: medium blur
-    elif progress < 0.75:
-        return (0.5, 9.0)   # Phase 4: harder blur
+    if progress < 0.10:
+        return (0.5, 3.0)    # Warmup: learn shapes
+    elif progress < 0.25:
+        return (1.0, 5.0)    # Easy blur
+    elif progress < 0.45:
+        return (2.0, 7.0)    # Medium — lower bound rises
+    elif progress < 0.65:
+        return (3.0, 9.0)    # Hard — no more easy samples
+    elif progress < 0.85:
+        return (4.0, 11.0)   # Harder
     else:
-        return (0.5, 12.0)  # Phase 5: push limits
+        return (5.0, 12.0)   # Maximum — all budget on hard cases
 
 
 def train(
     model_name: str = "resnet18",
-    epochs: int = 15,
-    batch_size: int = 256,
+    epochs: int = 30,
+    batch_size: int = 128,
     lr: float = 1e-3,
     samples_per_epoch: int = 51200,
     val_samples: int = 10240,
     output_dir: str = "models",
     wordlist: str = "data/bip39_english.txt",
-    time_limit_minutes: float = 20.0,
+    time_limit_minutes: float = 60.0,
 ):
     device = get_device()
     print(f"Device: {device}")
@@ -166,6 +165,36 @@ def train(
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     os.makedirs(output_dir, exist_ok=True)
 
+    # === FIX: Fixed validation set covering full sigma range ===
+    # Use a fixed seed so val set is identical every epoch
+    print("Creating fixed validation set (sigma 0.5-12, seed=9999)...")
+    import random, numpy as np
+    val_state = random.getstate()
+    np_state = np.random.get_state()
+    random.seed(9999)
+    np.random.seed(9999)
+    val_ds = OnTheFlyBlurDataset(
+        wordlist, fonts,
+        samples_per_epoch=val_samples,
+        sigma_range=(0.5, 12.0),  # Full deployment range
+        transform=get_val_transforms(),
+    )
+    # Pre-generate all val samples
+    val_items = [val_ds[i] for i in range(len(val_ds))]
+    random.setstate(val_state)
+    np.random.set_state(np_state)
+
+    # Wrap in a simple dataset
+    class FixedDataset(torch.utils.data.Dataset):
+        def __init__(self, items): self.items = items
+        def __len__(self): return len(self.items)
+        def __getitem__(self, i): return self.items[i]
+
+    fixed_val_ds = FixedDataset(val_items)
+    val_loader = DataLoader(fixed_val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    print(f"  Fixed val set: {len(fixed_val_ds)} samples, sigma 0.5-12.0")
+
+    # === Training setup ===
     best_val_acc = 0
     history = []
     start_time = time.time()
@@ -173,82 +202,93 @@ def train(
 
     print(f"\nTraining for up to {epochs} epochs (time limit: {time_limit_minutes}min)")
     print(f"  Batch size: {batch_size}, LR: {lr}")
-    print(f"  Curriculum learning: sigma increases over epochs")
+    print(f"  Hard-focused curriculum: sigma lower bound rises over epochs")
     print("=" * 60)
 
-    for epoch in range(epochs):
+    # === FIX: Single optimizer lifecycle ===
+    # Phase 1: Warmup — frozen backbone, simple LR
+    print("\n[Phase 1] Warmup: frozen backbone")
+    freeze_backbone(model)
+    warmup_params = [p for p in model.parameters() if p.requires_grad]
+    warmup_optimizer = optim.AdamW(warmup_params, lr=lr, weight_decay=0.01)
+
+    # Warmup epoch
+    sigma_range = get_sigma_for_epoch(0, epochs)
+    train_ds = OnTheFlyBlurDataset(wordlist, fonts, samples_per_epoch=samples_per_epoch,
+                                    sigma_range=sigma_range, transform=get_train_transforms())
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
+    warmup_sched = optim.lr_scheduler.OneCycleLR(warmup_optimizer, max_lr=lr,
+                                                   steps_per_epoch=len(train_loader), epochs=1, pct_start=0.3)
+
+    epoch_start = time.time()
+    train_loss, train_acc = train_one_epoch(model, train_loader, criterion, warmup_optimizer, device, warmup_sched)
+    val_metrics = evaluate(model, val_loader, criterion, device)
+    epoch_time = time.time() - epoch_start
+
+    history.append({
+        "epoch": 1, "sigma_range": list(sigma_range),
+        "train_loss": train_loss, "train_acc": train_acc,
+        "val_loss": val_metrics["loss"], "val_top1": val_metrics["top1_acc"],
+        "val_top5": val_metrics["top5_acc"], "epoch_time": epoch_time,
+        "total_time": time.time() - start_time,
+    })
+    print(f"  Warmup: Train {train_acc:.1f}% | Val T1={val_metrics['top1_acc']:.1f}% T5={val_metrics['top5_acc']:.1f}% | {epoch_time:.0f}s")
+
+    if val_metrics["top1_acc"] > best_val_acc:
+        best_val_acc = val_metrics["top1_acc"]
+        torch.save({"model_state_dict": model.state_dict(), "model_name": model_name,
+                     "epoch": 1, "val_top1": val_metrics["top1_acc"], "val_top5": val_metrics["top5_acc"]},
+                    os.path.join(output_dir, f"{model_name}_best.pt"))
+
+    # Phase 2: Unfreeze all, single optimizer for the rest
+    print("\n[Phase 2] Full training: all parameters unfrozen")
+    unfreeze_all(model)
+
+    backbone_params = []
+    head_params = []
+    for name, param in model.named_parameters():
+        if "fc" in name or "classifier" in name or "head" in name:
+            head_params.append(param)
+        else:
+            backbone_params.append(param)
+
+    optimizer = optim.AdamW([
+        {"params": backbone_params, "lr": lr * 0.1},
+        {"params": head_params, "lr": lr},
+    ], weight_decay=0.01)
+
+    remaining_epochs = epochs - 1
+    # We'll create a new train_loader each epoch (for curriculum), but use one scheduler
+    # Estimate total steps
+    steps_per_epoch = (samples_per_epoch + batch_size - 1) // batch_size
+    total_steps = steps_per_epoch * remaining_epochs
+
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=[lr * 0.1, lr],
+        total_steps=total_steps,
+        pct_start=0.08,
+    )
+
+    for epoch in range(1, epochs):
         elapsed = time.time() - start_time
         if elapsed > time_limit_sec:
             print(f"\nTime limit reached ({time_limit_minutes}min). Stopping.")
             break
 
-        # Curriculum: increase sigma over time
         sigma_range = get_sigma_for_epoch(epoch, epochs)
         print(f"\nEpoch {epoch+1}/{epochs} — sigma_range={sigma_range}")
 
-        # Epoch 0: freeze backbone, train head only
-        if epoch == 0:
-            print("  [Warmup] Freezing backbone, training head only")
-            freeze_backbone(model)
-        elif epoch == 1:
-            print("  [Unfreeze] Training all parameters")
-            unfreeze_all(model)
-
-        # Create fresh datasets with current sigma range
         train_ds = OnTheFlyBlurDataset(
             wordlist, fonts,
             samples_per_epoch=samples_per_epoch,
             sigma_range=sigma_range,
             transform=get_train_transforms(),
         )
-        val_ds = OnTheFlyBlurDataset(
-            wordlist, fonts,
-            samples_per_epoch=val_samples,
-            sigma_range=sigma_range,
-            transform=get_val_transforms(),
-        )
-
         train_loader = DataLoader(
             train_ds, batch_size=batch_size, shuffle=True,
             num_workers=4, persistent_workers=True,
         )
-        val_loader = DataLoader(
-            val_ds, batch_size=batch_size, shuffle=False,
-            num_workers=2, persistent_workers=True,
-        )
-
-        # Rebuild optimizer each time we change frozen params
-        if epoch <= 1:
-            trainable_params = [p for p in model.parameters() if p.requires_grad]
-            optimizer = optim.AdamW(trainable_params, lr=lr, weight_decay=0.01)
-            scheduler = optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=lr,
-                steps_per_epoch=len(train_loader),
-                epochs=1,  # one cycle per epoch since we rebuild
-                pct_start=0.2,
-            )
-        elif epoch == 2:
-            # After unfreeze, new optimizer with differential LR
-            backbone_params = []
-            head_params = []
-            for name, param in model.named_parameters():
-                if "fc" in name or "classifier" in name or "head" in name:
-                    head_params.append(param)
-                else:
-                    backbone_params.append(param)
-            optimizer = optim.AdamW([
-                {"params": backbone_params, "lr": lr * 0.1},
-                {"params": head_params, "lr": lr},
-            ], weight_decay=0.01)
-            remaining = epochs - epoch
-            scheduler = optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=[lr * 0.1, lr],
-                steps_per_epoch=len(train_loader),
-                epochs=remaining,
-                pct_start=0.1,
-            )
 
         epoch_start = time.time()
         train_loss, train_acc = train_one_epoch(
@@ -306,14 +346,14 @@ def train(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="resnet18")
-    parser.add_argument("--epochs", type=int, default=15)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--samples-per-epoch", type=int, default=51200)
     parser.add_argument("--val-samples", type=int, default=10240)
     parser.add_argument("--output", default="models")
     parser.add_argument("--wordlist", default="data/bip39_english.txt")
-    parser.add_argument("--time-limit", type=float, default=20.0)
+    parser.add_argument("--time-limit", type=float, default=60.0)
     args = parser.parse_args()
 
     train(
