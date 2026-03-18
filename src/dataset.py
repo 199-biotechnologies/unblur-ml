@@ -15,8 +15,8 @@ from albumentations.pytorch import ToTensorV2
 
 
 # Standard input size for models
-INPUT_H = 128
-INPUT_W = 384
+INPUT_H = 192
+INPUT_W = 576
 
 # Grayscale normalization (not ImageNet — our images are grayscale text)
 NORM_MEAN = [0.5, 0.5, 0.5]
@@ -121,7 +121,7 @@ class OnTheFlyBlurDataset(Dataset):
         self.samples_per_epoch = samples_per_epoch
         self.sigma_range = sigma_range
         self.transform = transform
-        self.font_sizes = font_sizes or [24, 28, 32, 36, 40, 48]
+        self.font_sizes = font_sizes or [28, 32, 36, 40, 48, 56, 64]
         self.n_classes = len(self.words)
 
     def __len__(self):
@@ -137,21 +137,28 @@ class OnTheFlyBlurDataset(Dataset):
         font_size = random.choice(self.font_sizes)
         sigma = random.uniform(*self.sigma_range)
 
-        # Diverse rendering conditions (baked into data generation):
+        # Diverse rendering conditions — weighted toward real-world screenshots
         r = random.random()
-        if r < 0.50:
+        if r < 0.30:
             # Standard: dark text on white/light bg
             gray_bg = random.randint(235, 255)
             gray_fg = random.randint(0, 50)
             text_color = (gray_fg, gray_fg, gray_fg)
             bg_color = (gray_bg, gray_bg, gray_bg)
-        elif r < 0.65:
-            # Grey/faded text (low contrast)
+        elif r < 0.55:
+            # LOW CONTRAST — matches real blurred screenshots (std ~6-8)
+            # Text is only slightly darker than background
+            gray_bg = random.randint(240, 255)
+            gray_fg = random.randint(200, 240)
+            text_color = (gray_fg, gray_fg, gray_fg)
+            bg_color = (gray_bg, gray_bg, gray_bg)
+        elif r < 0.70:
+            # Grey/faded text (medium contrast)
             gray_bg = random.randint(220, 250)
             gray_fg = random.randint(100, 180)
             text_color = (gray_fg, gray_fg, gray_fg)
             bg_color = (gray_bg, gray_bg, gray_bg)
-        elif r < 0.78:
+        elif r < 0.80:
             # Colored background (tinted)
             bg_r = random.randint(200, 255)
             bg_g = random.randint(200, 255)

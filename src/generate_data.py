@@ -29,10 +29,10 @@ FONT_PATHS = [
     "/System/Library/Fonts/HelveticaNeue.ttc",
 ]
 
-FONT_SIZES = [24, 28, 32, 36, 40, 48]
+FONT_SIZES = [28, 32, 36, 40, 48, 56, 64]
 SIGMA_RANGE = (1.0, 25.0)
-IMAGE_HEIGHT = 128
-IMAGE_WIDTH = 384  # wide enough for longest BIP-39 words
+IMAGE_HEIGHT = 192
+IMAGE_WIDTH = 576  # wide enough for longest BIP-39 words
 
 
 def get_available_fonts() -> list[str]:

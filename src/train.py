@@ -125,21 +125,23 @@ def evaluate(model, loader, criterion, device):
 
 
 def get_sigma_for_epoch(epoch: int, max_epochs: int) -> tuple:
-    """Hard-focused curriculum: lower bound rises too, spending budget on hard cases."""
+    """Hard-focused curriculum: pushes to sigma 18 for extreme blur recovery."""
     progress = epoch / max(max_epochs - 1, 1)
 
-    if progress < 0.10:
+    if progress < 0.08:
         return (0.5, 3.0)    # Warmup: learn shapes
-    elif progress < 0.25:
+    elif progress < 0.20:
         return (1.0, 5.0)    # Easy blur
-    elif progress < 0.45:
-        return (2.0, 7.0)    # Medium — lower bound rises
+    elif progress < 0.35:
+        return (2.0, 8.0)    # Medium
+    elif progress < 0.50:
+        return (3.0, 11.0)   # Hard
     elif progress < 0.65:
-        return (3.0, 9.0)    # Hard — no more easy samples
-    elif progress < 0.85:
-        return (4.0, 11.0)   # Harder
+        return (4.0, 14.0)   # Harder — into extreme territory
+    elif progress < 0.80:
+        return (5.0, 16.0)   # Very hard
     else:
-        return (5.0, 12.0)   # Maximum — all budget on hard cases
+        return (6.0, 18.0)   # Maximum — extreme blur
 
 
 def train(
