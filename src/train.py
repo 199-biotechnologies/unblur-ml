@@ -252,23 +252,19 @@ def train(
         else:
             backbone_params.append(param)
 
+    # Use CosineAnnealingWarmRestarts — better for curriculum since it doesn't
+    # start at near-zero LR like OneCycleLR does
     optimizer = optim.AdamW([
         {"params": backbone_params, "lr": lr * 0.1},
         {"params": head_params, "lr": lr},
     ], weight_decay=0.01)
 
     remaining_epochs = epochs - 1
-    # We'll create a new train_loader each epoch (for curriculum), but use one scheduler
-    # Estimate total steps
-    steps_per_epoch = (samples_per_epoch + batch_size - 1) // batch_size
-    total_steps = steps_per_epoch * remaining_epochs
-
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=[lr * 0.1, lr],
-        total_steps=total_steps,
-        pct_start=0.08,
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=remaining_epochs, eta_min=1e-6,
     )
+    # CosineAnnealingLR steps per-epoch, not per-batch
+    per_batch_scheduler = False
 
     for epoch in range(1, epochs):
         elapsed = time.time() - start_time
@@ -291,9 +287,11 @@ def train(
         )
 
         epoch_start = time.time()
+        # CosineAnnealingLR steps per-epoch, pass None for per-batch scheduler
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, scheduler
+            model, train_loader, criterion, optimizer, device, scheduler=None
         )
+        scheduler.step()  # Step per-epoch
         val_metrics = evaluate(model, val_loader, criterion, device)
 
         epoch_time = time.time() - epoch_start
