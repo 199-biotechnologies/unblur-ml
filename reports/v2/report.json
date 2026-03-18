@@ -1,0 +1,96 @@
+{
+  "model": "resnet18 v2 (128x384)",
+  "best_val_top1": 95.7,
+  "best_val_top5": 98.9,
+  "training_time_min": 20,
+  "sigma_results_plain": {
+    "1": {
+      "top1": 100,
+      "top5": 100
+    },
+    "3": {
+      "top1": 98,
+      "top5": 100
+    },
+    "5": {
+      "top1": 94,
+      "top5": 98
+    },
+    "7": {
+      "top1": 41,
+      "top5": 68
+    },
+    "8": {
+      "top1": 19,
+      "top5": 34
+    },
+    "10": {
+      "top1": 1,
+      "top5": 4
+    },
+    "12": {
+      "top1": 0,
+      "top5": 0
+    }
+  },
+  "sigma_results_enhanced": {
+    "1": {
+      "top1": 93,
+      "top5": 98
+    },
+    "3": {
+      "top1": 71,
+      "top5": 85
+    },
+    "5": {
+      "top1": 28,
+      "top5": 51
+    },
+    "7": {
+      "top1": 7,
+      "top5": 11
+    },
+    "8": {
+      "top1": 3,
+      "top5": 9
+    },
+    "10": {
+      "top1": 1,
+      "top5": 4
+    },
+    "12": {
+      "top1": 0,
+      "top5": 2
+    }
+  },
+  "edge_cases": {
+    "Heavy crop (25%)": {
+      "top1": 24,
+      "top5": 34
+    },
+    "JPEG q=20-40": {
+      "top1": 23,
+      "top5": 36
+    },
+    "Heavy noise (std=20)": {
+      "top1": 6,
+      "top5": 17
+    },
+    "Grey text (low contrast)": {
+      "top1": 25,
+      "top5": 36
+    },
+    "Colored background": {
+      "top1": 26,
+      "top5": 38
+    },
+    "Downscale 50% + upscale": {
+      "top1": 20,
+      "top5": 34
+    },
+    "Combined (crop+jpeg+noise)": {
+      "top1": 12,
+      "top5": 26
+    }
+  }
+}
