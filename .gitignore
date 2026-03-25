@@ -8,3 +8,5 @@ reports/*.json
 .DS_Store
 *.egg-info/
 .claude/
+.ralph/
+testdata/

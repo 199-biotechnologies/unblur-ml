@@ -15,8 +15,8 @@ from albumentations.pytorch import ToTensorV2
 
 
 # Standard input size for models
-INPUT_H = 192
-INPUT_W = 576
+INPUT_H = 128
+INPUT_W = 384
 
 # Grayscale normalization (not ImageNet — our images are grayscale text)
 NORM_MEAN = [0.5, 0.5, 0.5]
@@ -121,7 +121,7 @@ class OnTheFlyBlurDataset(Dataset):
         self.samples_per_epoch = samples_per_epoch
         self.sigma_range = sigma_range
         self.transform = transform
-        self.font_sizes = font_sizes or [28, 32, 36, 40, 48, 56, 64]
+        self.font_sizes = font_sizes or [24, 28, 32, 36, 40, 48]
         self.n_classes = len(self.words)
 
     def __len__(self):
