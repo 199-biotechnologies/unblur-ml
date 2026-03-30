@@ -1,153 +1,169 @@
-# UnblurML
+<div align="center">
 
-**A proof of concept demonstrating that Gaussian-blurred text can be recovered using deep learning — and why visual redaction methods are no longer trustworthy.**
+# Unblur ML
 
-By [Boris Djordjevic](https://github.com/199-biotechnologies)
+**Recover Gaussian-blurred BIP-39 seed phrases using a CNN classifier. 100% accuracy at mild blur. 93% at heavy blur. Trained in 70 minutes on a laptop.**
+
+<br />
+
+[![Star this repo](https://img.shields.io/github/stars/199-biotechnologies/unblur-ml?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/199-biotechnologies/unblur-ml/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+<br />
+
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.10+-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 ---
 
-## Why This Matters
+Think blurring your seed phrase keeps it safe? It does not. This tool proves that a commodity deep learning model, trained on a single laptop in under two hours, can read blurred text with near-perfect accuracy. No cloud compute. No special datasets. Just a ResNet-18 and the BIP-39 wordlist. If your security depends on Gaussian blur, you have a problem.
 
-We are entering an era where the traditional methods of obscuring sensitive information — blurring, pixelation, mosaic filters, and even simple redaction bars — are becoming dangerously unreliable.
+[Why This Exists](#why-this-exists) | [How It Works](#how-it-works) | [Results](#results) | [Install](#install) | [Usage](#usage) | [Contributing](#contributing) | [License](#license)
 
-For decades, people have relied on Gaussian blur to hide text in screenshots: seed phrases, passwords, personal details, classified documents. The assumption was always that blur is a one-way operation — once the information is smeared, it's gone. **That assumption is wrong.**
+</div>
 
-This project demonstrates that a commodity deep learning model, trained in under two hours on a single laptop, can recover blurred text with surprising accuracy. The model doesn't reconstruct the image — it classifies the blurred shape directly against a known vocabulary, bypassing the need for deblurring entirely.
+## Why This Exists
 
-### The Broader Implications
+People blur sensitive text in screenshots every day. Seed phrases, passwords, personal details, classified documents. The assumption is that blur is a one-way operation. Once the information is smeared, it's gone.
 
-This is not an isolated result. The same principle applies to:
+That assumption is wrong.
 
-- **Mosaic/pixelation filters** — research has already shown these can be reversed with neural networks, as pixel-block patterns retain spatial frequency information that models can exploit.
-- **Redaction by overlaying black bars** — if the bars don't fully cover the text, even a single pixel of exposed character can leak information. Combined with known font metrics and character-length analysis, partial redactions can be reconstructed.
-- **Blurred faces and licence plates** — GAN-based methods (like PULSE and GFPGAN) can hallucinate plausible reconstructions from heavily degraded inputs.
-- **Government redactions** — the Epstein files and similar high-profile document releases have drawn attention to the fragility of redaction techniques. Researchers and journalists have been attempting to reconstruct what lies beneath blurred, pixelated, or partially redacted sections of declassified documents. The techniques demonstrated here apply directly to those efforts.
+This project exists to demonstrate the problem. It is a security research tool, not an attack tool. The goal is to make you stop trusting visual redaction.
 
-**The core insight is simple**: if you know the vocabulary (BIP-39 wordlist, common names, addresses, document templates), classification is far easier than reconstruction. You don't need to unblur the image — you just need to determine which word from a known list best matches the blur pattern.
+The same principle applies beyond seed phrases:
 
-And the barrier to building these tools is collapsing. This entire model — data generation, training, inference — was built and trained in a single afternoon using open-source libraries on consumer hardware. No cloud compute. No special datasets. No PhD required.
+- **Pixelation and mosaic filters** retain spatial frequency information that neural networks can exploit
+- **Black redaction bars** that don't fully cover text leak information through exposed pixels and character-length analysis
+- **Blurred faces and license plates** can be reconstructed by GANs like PULSE and GFPGAN
+- **Government redactions** on declassified documents are subject to the same vulnerabilities
+
+The core insight: if you know the vocabulary, classification is far easier than reconstruction. You do not need to unblur the image. You just need to figure out which word from a known list produced that blur pattern.
+
+The barrier to building these tools is collapsing. This entire model was built and trained in a single afternoon using open-source libraries on consumer hardware. No PhD required.
 
 **If your security depends on visual obscuration, it is time to reconsider.**
 
----
+## How It Works
 
-## What This Project Does
+Unblur ML treats deblurring as **classification, not reconstruction**. BIP-39 has exactly 2,048 words. Instead of recovering the original pixels, the model identifies which word produced the blur pattern. This transforms an ill-posed inverse problem into a tractable 2,048-class classification task.
 
-UnblurML recovers Gaussian-blurred BIP-39 seed phrase words using a classification approach. Given a blurred image of a single word, the model classifies it as one of 2,048 entries in the BIP-39 English wordlist.
+### Architecture
 
-### Key Results
+- **Backbone**: ResNet-18 (ImageNet pretrained, fine-tuned)
+- **Input**: 128x384 px RGB images
+- **Output**: 2,048-class softmax over the BIP-39 English wordlist
+- **Optimizer**: AdamW with CosineAnnealingLR, differential learning rates (backbone 0.1x, head 1x)
+- **Loss**: CrossEntropy with label smoothing (0.1)
+
+### On-the-Fly Data Generation
+
+No static dataset. Every training sample is synthesized in real time:
+
+1. Render a random BIP-39 word in a random font (Menlo, Courier, SF Mono), random size, random position
+2. Apply Gaussian blur at a random sigma level
+3. Augment with real-world degradations: JPEG compression, downscaling, affine transforms, noise, contrast variation
+
+The model never sees the same image twice. Each epoch is entirely fresh data. This prevents overfitting and enables unlimited effective dataset size.
+
+### Curriculum Learning
+
+Training starts easy and gets progressively harder. The lower bound of blur sigma rises over time, forcing the model to spend its training budget on hard cases:
+
+| Phase | Blur Sigma | Purpose |
+|---|---|---|
+| Warmup | 0.5 - 3.0 | Frozen backbone, train classifier head only |
+| Easy | 1.0 - 5.0 | Learn word shapes with mild blur |
+| Medium | 2.0 - 8.0 | Generalize to moderate blur |
+| Hard | 3.0 - 11.0 | Focus on difficult cases |
+| Harder | 4.0 - 14.0 | Push into extreme territory |
+| Very Hard | 5.0 - 16.0 | Near information-theoretic limit |
+| Maximum | 6.0 - 18.0 | Extreme blur recovery |
+
+### Multi-Variation Ensemble Inference
+
+At inference time, multiple variations of the input are generated and their predictions averaged:
+
+- Contrast stretching at multiple percentile levels (single biggest accuracy boost for real-world images)
+- CLAHE at different clip limits
+- Brightness jitter, scale jitter, crop jitter
+
+This stabilizes predictions at high blur levels where small crop boundary changes can shift the top-1 prediction.
+
+### Length-Constrained Inference
+
+When you know the approximate character length of the blurred word (from UI layout or font metrics), predictions can be filtered to only include words matching that length. This narrows the candidate pool from 2,048 words down to 88-555, dramatically boosting effective accuracy.
+
+## Results
+
+### Accuracy by Blur Level
 
 | Blur Sigma | Top-1 Accuracy | Top-5 Accuracy | Top-20 Accuracy |
 |---|---|---|---|
-| 3 (mild) | 100% | 100% | 100% |
-| 5 (medium) | 99.5% | 100% | 100% |
-| 7 (heavy) | 96.0% | 100% | 100% |
-| 8 (very heavy) | 93.0% | 99.0% | 100% |
-| 10 (extreme) | 79.0% | 94.0% | 98.0% |
-| 12 (near-obliteration) | 51.0% | 75.5% | 87.0% |
+| 3 (mild) | **100%** | 100% | 100% |
+| 5 (medium) | **99.5%** | 100% | 100% |
+| 7 (heavy) | **96.0%** | 100% | 100% |
+| 8 (very heavy) | **93.0%** | 99.0% | 100% |
+| 10 (extreme) | **79.0%** | 94.0% | 98.0% |
+| 12 (near-obliteration) | **51.0%** | 75.5% | 87.0% |
 
-Edge case robustness (with base blur sigma 3–8):
+### Edge Case Robustness
+
+With base blur sigma 3-8:
 
 | Degradation | Top-5 Accuracy |
 |---|---|
 | Heavy crop (25% removed) | 96.0% |
-| JPEG compression (q=20–40) | 97.3% |
+| JPEG compression (q=20-40) | 97.3% |
 | Grey/faded text (40% contrast) | 100% |
-| Inverted colours (light on dark) | 100% |
+| Inverted colors (light on dark) | 100% |
 | Downscale 50% + upscale | 100% |
 | Combined worst case | 94.7% |
 
 Training time: **70 minutes** on Apple M4 Max (64GB).
 
-### What Makes This Approach Work
-
-The key innovation is treating deblurring as **classification rather than reconstruction**. Since BIP-39 has exactly 2,048 words, we don't need to recover the original pixels — we simply need to identify which word produced the blur pattern. This transforms an ill-posed inverse problem into a tractable 2,048-class classification task.
-
----
-
-## Technical Approach
-
-### On-the-Fly Synthetic Data Generation
-
-Rather than pre-generating a fixed dataset, training data is synthesised in real time during training. Each sample is created by:
-
-1. **Rendering** a random BIP-39 word in a random font (Menlo, Courier, SF Mono, etc.), at a random size, with random positioning jitter
-2. **Applying Gaussian blur** at a random sigma level (controlled by curriculum)
-3. **Augmenting** with real-world degradations: JPEG compression, downscaling, affine transforms, coarse dropout, brightness/contrast variation, and Gaussian noise
-
-This means the model never sees the same image twice. Each epoch presents entirely fresh samples, preventing overfitting and enabling unlimited effective dataset size.
-
-#### Rendering Diversity
-
-Training samples include diverse rendering conditions to match real-world screenshots:
-
-- **Standard** dark text on light background (30%)
-- **Low contrast** — text nearly invisible against background, matching heavily blurred screenshots (25%)
-- **Grey/faded text** — medium contrast reduction (15%)
-- **Coloured backgrounds** — tinted UI themes (10%)
-- **Inverted** — light text on dark background (10%)
-- **Dark theme with coloured text** (10%)
-
-### Curriculum Learning
-
-The model starts with easy examples and progressively increases difficulty. Critically, the **lower bound** of blur sigma rises over time, forcing the model to spend its training budget on hard cases rather than wasting epochs on trivially readable text:
-
-| Phase | Blur Sigma | Purpose |
-|---|---|---|
-| Warmup | 0.5–3.0 | Frozen backbone, train classifier head only |
-| Easy | 1.0–5.0 | Learn word shapes with mild blur |
-| Medium | 2.0–8.0 | Generalise to moderate blur |
-| Hard | 3.0–11.0 | No more easy samples — focus on difficult cases |
-| Harder | 4.0–14.0 | Push into extreme territory |
-| Very Hard | 5.0–16.0 | Near information-theoretic limit |
-| Maximum | 6.0–18.0 | Extreme blur recovery |
-
-### Length-Constrained Inference
-
-When approximate character lengths are known (from UI layout, font metrics, or manual estimation), the model's predictions can be filtered to only include words matching the expected length. This dramatically narrows the candidate pool — from 2,048 words down to 88–555 depending on length — and significantly boosts effective accuracy.
-
-### Multi-Variation Ensemble
-
-At inference time, multiple variations of the input are generated and their predictions averaged:
-
-- **Contrast stretching** at multiple percentile levels (the single biggest improvement for real-world images)
-- **CLAHE** (Contrast Limited Adaptive Histogram Equalisation) at different clip limits
-- **Brightness jitter** (±10–30 pixel values)
-- **Scale jitter** (0.92x–1.08x)
-- **Small crop jitter** (±5px random boundary shifts)
-
-This stabilises predictions at high blur levels where small changes in crop boundaries can shift the top-1 prediction.
-
----
-
-## Quick Start
+## Install
 
 ```bash
-# Install dependencies
+git clone https://github.com/199-biotechnologies/unblur-ml.git
+cd unblur-ml
 pip install -r requirements.txt
-
-# Train a model (~70 min on Apple Silicon)
-python -m src.train --model resnet18 --epochs 40 --time-limit 90
-
-# Run inference on a blurred word image
-python -m src.enhanced_inference path/to/blurred_word.png --model models/resnet18_best.pt
-
-# Run benchmark
-python -m src.benchmark --model models/resnet18_best.pt --output reports
-
-# Generate PDF report
-python -m src.generate_report
 ```
 
-## Architecture
+### Requirements
 
-- **Backbone**: ResNet-18 (ImageNet pretrained, fine-tuned)
-- **Input**: 128×384 px RGB images
-- **Output**: 2,048-class softmax over BIP-39 wordlist
-- **Training**: On-the-fly synthetic data, no disk dataset required
-- **Optimiser**: AdamW with CosineAnnealingLR, differential learning rates (backbone 0.1×, head 1×)
-- **Loss**: CrossEntropy with label smoothing (0.1)
-- **Validation**: Fixed seed evaluation set covering full sigma range (0.5–12.0)
+- Python 3.12+
+- PyTorch 2.10+ (MPS backend for Apple Silicon, CUDA for NVIDIA)
+- timm, albumentations, Pillow, OpenCV
+
+## Usage
+
+### Train a Model
+
+```bash
+python -m src.train --model resnet18 --epochs 40 --time-limit 90
+```
+
+Training takes about 70 minutes on Apple Silicon. Works on CUDA GPUs. CPU training is possible but slow.
+
+### Run Inference on a Blurred Image
+
+```bash
+python -m src.enhanced_inference path/to/blurred_word.png --model models/resnet18_best.pt
+```
+
+### Benchmark
+
+```bash
+python -m src.benchmark --model models/resnet18_best.pt --output reports
+```
+
+### Generate Report
+
+```bash
+python -m src.generate_report
+```
 
 ## Project Structure
 
@@ -167,33 +183,36 @@ models/                 # Saved checkpoints (.pt, gitignored)
 reports/                # Benchmark reports (PDF)
 ```
 
-## Requirements
-
-- Python 3.12+
-- PyTorch 2.10+ (MPS backend for Apple Silicon, CUDA for NVIDIA)
-- timm, albumentations, Pillow, OpenCV
-- Optional: realesrgan (for super-resolution preprocessing)
-
-## Hardware
-
-Developed and tested on **Apple M4 Max** (64GB unified memory) using the PyTorch MPS backend. Works on CUDA GPUs. CPU training is possible but slow.
-
----
-
 ## Responsible Disclosure
 
-This project is published as a **proof of concept** to raise awareness about the inadequacy of visual redaction methods. The goal is to encourage better security practices — not to enable attacks.
+This project is a proof of concept for security awareness. The goal is to encourage better security practices, not to enable attacks.
 
-**If you are protecting sensitive information:**
+If you are protecting sensitive information:
+
 - Do not rely on blur, pixelation, or mosaic filters
-- Use solid-colour redaction bars that fully cover the text with margin
+- Use solid-color redaction bars that fully cover the text with margin
 - Remove the underlying text data from the document, not just the visual layer
 - Assume that any partially visible information can be recovered
 
-## Licence
+## Contributing
 
-MIT
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-## Author
+## License
 
-**Boris Djordjevic** — [199 Biotechnologies](https://github.com/199-biotechnologies)
+[MIT](LICENSE)
+
+---
+<div align="center">
+
+Built by [Boris Djordjevic](https://github.com/longevityboris) at [199 Biotechnologies](https://github.com/199-biotechnologies) | [Paperfoot AI](https://paperfoot.ai)
+
+<br />
+
+**If this is useful to you:**
+
+[![Star this repo](https://img.shields.io/github/stars/199-biotechnologies/unblur-ml?style=for-the-badge&logo=github&label=%E2%AD%90%20Star%20this%20repo&color=yellow)](https://github.com/199-biotechnologies/unblur-ml/stargazers)
+&nbsp;&nbsp;
+[![Follow @longevityboris](https://img.shields.io/badge/Follow_%40longevityboris-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/longevityboris)
+
+</div>
